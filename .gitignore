@@ -12,3 +12,7 @@ qiner-metal/metal-hello/stress
 # session-specific working files (local only, not part of the published project)
 CONTINUE-METAL-PORT.md
 tools/
+
+# NEVER COMMIT: contains real pool access tokens / credentials
+deploy/
+mine.log
