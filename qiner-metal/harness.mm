@@ -10,6 +10,8 @@
 //   ./build/harness verify [N=2]      full bit-exactness: N bench nonces, GPU cohort
 //                                     (100 lockstep mutation steps) vs CPU computeScore.
 //   ./build/harness perf [C=8] [S=100] GPU throughput: cohort of C candidates, S steps.
+//   ./build/harness mine [C=8]        continuous mining with live per-step output
+//                                     (fresh nonces each round; Ctrl-C for clean summary).
 //
 // Build: see build.sh (clang++ .mm + runtime MSL compile; no offline metal toolchain).
 
@@ -26,6 +28,7 @@
 #include <array>
 #include <memory>
 #include <chrono>
+#include <csignal>
 #include <initializer_list>
 
 #include "src/score_bpp9000_ref.h"
@@ -300,6 +303,20 @@ static void makeBenchNonce(int n, unsigned char nonce[32])
     nonce[4] = 0x5A;
 }
 
+// mine mode: unique nonce per global index (64-bit counter spread over bytes 3..10)
+static void makeMineNonce(uint64_t idx, unsigned char nonce[32])
+{
+    memset(nonce, 0, 32);
+    nonce[0] = 1;                               // AlgoType::Bpp9000
+    nonce[1] = (unsigned char)(1 + (idx % 10)); // L in [1,10]
+    nonce[2] = 0;                               // K
+    for (int b = 0; b < 8; ++b) nonce[3 + b] = (unsigned char)(idx >> (8 * b));
+    nonce[11] = 0xA5;
+}
+
+static volatile sig_atomic_t g_stop = 0;
+static void onStop(int) { g_stop = 1; }
+
 struct Candidate
 {
     uint8_t lut[LUT_BYTES];
@@ -349,7 +366,7 @@ static void applyMutation(const MinerT* m, uint8_t* lut, uint64_t seed)
 static bool runCohortGPU(GpuScorer& gpu, const MinerT* m, const unsigned char pubkey[32],
                          const uint8_t* lut0, uint32_t score0,
                          const std::vector<std::array<unsigned char,32>>& nonces,
-                         uint32_t steps, uint32_t* bestOut)
+                         uint32_t steps, uint32_t* bestOut, bool verbose = false)
 {
     const uint32_t C = (uint32_t)nonces.size();
     std::vector<Candidate> cand(C);
@@ -367,8 +384,9 @@ static bool runCohortGPU(GpuScorer& gpu, const MinerT* m, const unsigned char pu
 
     std::vector<uint8_t> luts((size_t)C * LUT_BYTES);
     std::vector<uint32_t> r(C);
-    for (uint32_t s = 0; s < steps; ++s)
+    for (uint32_t s = 0; s < steps && !g_stop; ++s)
     {
+        auto tStep = Clock::now();
         for (uint32_t n = 0; n < C; ++n)
         {
             memcpy(cand[n].prev, cand[n].lut, LUT_BYTES);
@@ -391,6 +409,13 @@ static bool runCohortGPU(GpuScorer& gpu, const MinerT* m, const unsigned char pu
                 memcpy(cand[n].lut, cand[n].prev, LUT_BYTES);
             }
             if (cand[n].cur < cand[n].best) cand[n].best = cand[n].cur;
+        }
+        if (verbose)
+        {
+            uint32_t mn = cand[0].best;
+            for (uint32_t n = 1; n < C; ++n) if (cand[n].best < mn) mn = cand[n].best;
+            printf("  [step %3u/%u] cohort-best=%u  (%.0f ms)\n",
+                   s + 1, steps, mn, secondsSince(tStep) * 1e3);
         }
     }
     for (uint32_t n = 0; n < C; ++n) bestOut[n] = cand[n].best;
@@ -591,6 +616,51 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    fprintf(stderr, "unknown mode '%s' (use quick|verify|perf)\n", mode.c_str());
+    if (mode == "mine")
+    {
+        const uint32_t C = (argc > 2) ? (uint32_t)atoi(argv[2]) : 8;
+        if (C < 1 || C > MAXC) { fprintf(stderr, "C must be 1..%u\n", MAXC); return 1; }
+        signal(SIGINT, onStop);
+        signal(SIGTERM, onStop);
+        printf("[mine] continuous mining, cohort C=%u, %u steps/nonce — Ctrl-C to stop\n",
+               C, NUM_STEPS);
+
+        std::vector<std::array<unsigned char,32>> nonces(C);
+        std::vector<uint32_t> best(C);
+        uint64_t round = 0, noncesDone = 0;
+        uint32_t allTimeBest = score0;
+        auto tMine = Clock::now();
+        while (!g_stop)
+        {
+            for (uint32_t n = 0; n < C; ++n)
+                makeMineNonce(round * C + n, nonces[n].data());
+            printf("[mine] round %llu (nonces %llu..%llu), initial=%u\n",
+                   (unsigned long long)round,
+                   (unsigned long long)(round * C),
+                   (unsigned long long)(round * C + C - 1), score0);
+            if (!runCohortGPU(gpu, miner.get(), pubkey, lut0.data(), score0, nonces,
+                              NUM_STEPS, best.data(), /*verbose=*/true))
+                return 1;
+            if (g_stop) break;                       // partial round: don't count it
+            uint32_t roundBest = best[0];
+            for (uint32_t n = 1; n < C; ++n) if (best[n] < roundBest) roundBest = best[n];
+            if (roundBest < allTimeBest) allTimeBest = roundBest;
+            ++round;
+            noncesDone += C;
+            double mins = secondsSince(tMine) / 60.0;
+            printf("[mine] round %llu done: round-best=%u  ALL-TIME BEST=%u  "
+                   "total %llu nonces in %.1f min (%.1f nonces/min)\n",
+                   (unsigned long long)(round - 1), roundBest, allTimeBest,
+                   (unsigned long long)noncesDone, mins, noncesDone / mins);
+        }
+        double mins = secondsSince(tMine) / 60.0;
+        printf("\n[mine] stopped. %llu nonces, %.1f min, %.1f nonces/min, all-time best=%u "
+               "(lower is better; initial=%u)\n",
+               (unsigned long long)noncesDone, mins,
+               mins > 0 ? noncesDone / mins : 0.0, allTimeBest, score0);
+        return 0;
+    }
+
+    fprintf(stderr, "unknown mode '%s' (use quick|verify|perf|mine)\n", mode.c_str());
     return 1;
 }
