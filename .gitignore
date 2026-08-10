@@ -1,0 +1,14 @@
+# build artifacts (rebuild with each project's build.sh / cmake)
+qiner-macos/build/
+qiner-metal/build/
+qiner-metal/metal-hello/hello
+qiner-metal/metal-hello/stress
+*.o
+*.dSYM/
+
+# macOS noise
+.DS_Store
+
+# session-specific working files (local only, not part of the published project)
+CONTINUE-METAL-PORT.md
+tools/

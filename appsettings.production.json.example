@@ -1,0 +1,24 @@
+{
+  "//": "Template for a systemd install: copy to /q/appsettings.production.json (it survives upgrades).",
+  "//1": "systemd installs use the 'Settings' root key; portable/screen installs use 'ClientSettings' — match whatever your installed file already uses.",
+  "//2": "cpuVersion null = auto-detect. Pin to 'AVX512' / 'AVX2' / 'SKYLAKE' if /var/log/qli.log shows the wrong qli-worker variant.",
+  "//3": "cpuThreads: start at PHYSICAL core count, A/B test +/-2. After changing it, re-run: sudo bash rig-tune.sh <threads>  (hugepages = 52 x threads).",
+  "//4": "gpuCards: null/-1 = auto-tune per card; '0,-1' disables card 0; explicit numbers set gThreads manually.",
+  "Settings": {
+    "accessToken": "PASTE_JWT_FROM_pool.qubic.li_CONTROL_PANEL",
+    "alias": "ubuntu-rig-1",
+    "pps": true,
+    "autoUpdate": true,
+    "displayDetailedHashrates": true,
+    "displayUptime": true,
+    "trainer": {
+      "cpu": true,
+      "cpuVersion": null,
+      "cpuThreads": 16,
+      "cpuAffinity": null,
+      "gpu": true,
+      "gpuVersion": "CUDA",
+      "gpuCards": null
+    }
+  }
+}
