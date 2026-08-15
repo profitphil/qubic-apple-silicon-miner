@@ -3,7 +3,8 @@
 #   export QLI_TOKEN='<token from pool.qubic.li>'
 #   ./run.sh          # DRY-RUN (no submits) — verify it connects + mines
 #   ./run.sh --live   # submit shares to your account
-# Env: QLI_TOKEN (required), WORKER (default <hostname>-metal), COHORT (default 4)
+# Env: QLI_TOKEN (required), WORKER (default <hostname>-metal),
+#      COHORT (default 4; keep it small 2-8 — large values trip the macOS GPU watchdog)
 set -euo pipefail
 cd "$(dirname "$0")"
 

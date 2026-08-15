@@ -768,7 +768,16 @@ int main(int argc, char** argv)
             for (uint32_t n = 0; n < C; ++n) makeMineNonce(nonceCtr++, nonces[n].data());
             std::vector<uint32_t> best(C);
             if (!runCohortGPU(gpu, miner.get(), curPubkey.data(), lut0s.data(), score0s,
-                              nonces, NUM_STEPS, best.data())) break;
+                              nonces, NUM_STEPS, best.data()))
+            {
+                // GPU dispatch failed (e.g. macOS watchdog on a heavy pubkey). Do NOT die —
+                // skip this pubkey and wait for the next job. Lower COHORT if it recurs.
+                fprintf(stderr, "[stratum] GPU dispatch failed — skipping pubkey (reduce COHORT if frequent)\n");
+                fflush(stderr);
+                haveJob = false;
+                usleep(200000);
+                continue;
+            }
             cohorts++;
             for (uint32_t n = 0; n < C; ++n)
             {
