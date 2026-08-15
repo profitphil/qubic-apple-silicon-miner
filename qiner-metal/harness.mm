@@ -30,6 +30,9 @@
 #include <chrono>
 #include <csignal>
 #include <initializer_list>
+#include <thread>
+#include <mutex>
+#include <iostream>
 
 #include "src/score_bpp9000_ref.h"
 
@@ -316,6 +319,60 @@ static void makeMineNonce(uint64_t idx, unsigned char nonce[32])
 
 static volatile sig_atomic_t g_stop = 0;
 static void onStop(int) { g_stop = 1; }
+
+// ---- Stratum mode: jobs fed as JSON lines on stdin, shares emitted as JSON on stdout ----
+struct StratumJob {
+    std::vector<unsigned char> seed, pubkey;
+    uint32_t difficulty = 0;
+    uint64_t epoch = 0;
+    bool valid = false;
+};
+static std::mutex g_jobMtx;
+static StratumJob g_job;
+static uint64_t g_gen = 0;
+
+static std::string jsonStr(const std::string& s, const char* key) {
+    std::string k = std::string("\"") + key + "\"";
+    size_t p = s.find(k); if (p == std::string::npos) return "";
+    p = s.find(':', p + k.size()); if (p == std::string::npos) return "";
+    size_t q = s.find('"', p); if (q == std::string::npos) return "";
+    size_t r = s.find('"', q + 1); if (r == std::string::npos) return "";
+    return s.substr(q + 1, r - q - 1);
+}
+static long long jsonNum(const std::string& s, const char* key) {
+    std::string k = std::string("\"") + key + "\"";
+    size_t p = s.find(k); if (p == std::string::npos) return -1;
+    p = s.find(':', p + k.size()); if (p == std::string::npos) return -1;
+    return strtoll(s.c_str() + p + 1, nullptr, 10);
+}
+static std::vector<unsigned char> hexToBytes(const std::string& h) {
+    std::vector<unsigned char> out;
+    for (size_t i = 0; i + 1 < h.size(); i += 2)
+        out.push_back((unsigned char)strtoul(h.substr(i, 2).c_str(), nullptr, 16));
+    return out;
+}
+static std::string bytesToHex(const unsigned char* b, size_t n) {
+    static const char* d = "0123456789ABCDEF";
+    std::string s; s.reserve(n * 2);
+    for (size_t i = 0; i < n; ++i) { s.push_back(d[b[i] >> 4]); s.push_back(d[b[i] & 15]); }
+    return s;
+}
+static void stratumStdinReader() {
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.find("\"seed\"") == std::string::npos) continue;
+        std::string seed = jsonStr(line, "seed"), pk = jsonStr(line, "pubkey");
+        long long diff = jsonNum(line, "difficulty"), ep = jsonNum(line, "epoch");
+        if (seed.size() == 64 && pk.size() == 64 && diff >= 0) {
+            StratumJob j;
+            j.seed = hexToBytes(seed); j.pubkey = hexToBytes(pk);
+            j.difficulty = (uint32_t)diff; j.epoch = (uint64_t)(ep < 0 ? 0 : ep); j.valid = true;
+            std::lock_guard<std::mutex> lk(g_jobMtx);
+            g_job = j; g_gen++;
+        }
+    }
+    g_stop = 1; // stdin closed -> shut down
+}
 
 struct Candidate
 {
@@ -661,6 +718,82 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    fprintf(stderr, "unknown mode '%s' (use quick|verify|perf|mine)\n", mode.c_str());
+    if (mode == "stratum")
+    {
+        signal(SIGINT, onStop);
+        signal(SIGTERM, onStop);
+        const uint32_t C = getenv("COHORT") ? (uint32_t)atoi(getenv("COHORT")) : 4;
+        fprintf(stderr, "[stratum] ready (task=%s, cohort=%u); reading jobs on stdin\n", taskPath, C);
+        fflush(stderr);
+        std::thread(stratumStdinReader).detach();
+
+        std::vector<unsigned char> curSeed(32, 0), curPubkey(32, 0);
+        bool haveJob = false, haveSeed = false;
+        uint32_t difficulty = 0; uint64_t epoch = 0;
+        std::vector<uint8_t> lut0s(LUT_BYTES); uint32_t score0s = 0;
+        uint64_t seenGen = 0, nonceCtr = 0, cohorts = 0, shares = 0;
+
+        while (!g_stop)
+        {
+            StratumJob j; uint64_t gnow;
+            { std::lock_guard<std::mutex> lk(g_jobMtx); gnow = g_gen; j = g_job; }
+            if (gnow != seenGen && j.valid)
+            {
+                seenGen = gnow;
+                if (!haveSeed || j.seed != curSeed)
+                {
+                    generateRandom2Pool(j.seed.data(), (unsigned char*)poolMem);
+                    if (!miner->initialize((const unsigned char*)poolMem, taskPath))
+                    { fprintf(stderr, "[stratum] task load failed\n"); return 1; }
+                    curSeed = j.seed; haveSeed = true;
+                    fprintf(stderr, "[stratum] pool re-keyed for seed %s…\n",
+                            bytesToHex(j.seed.data(), 6).c_str());
+                }
+                curPubkey = j.pubkey; difficulty = j.difficulty; epoch = j.epoch;
+                buildInitialLut(miner.get(), curPubkey.data(), lut0s.data());
+                if (!gpu.score(lut0s.data(), 1, &score0s)) return 1;
+                nonceCtr = 0; haveJob = true;
+                fprintf(stderr, "[stratum] job epoch=%llu diff=%u pubkey=%s… score0=%u\n",
+                        (unsigned long long)epoch, difficulty,
+                        bytesToHex(curPubkey.data(), 6).c_str(), score0s);
+                fflush(stderr);
+            }
+            if (!haveJob) { usleep(100000); continue; }
+
+            std::vector<std::array<unsigned char,32>> nonces(C);
+            for (uint32_t n = 0; n < C; ++n) makeMineNonce(nonceCtr++, nonces[n].data());
+            std::vector<uint32_t> best(C);
+            if (!runCohortGPU(gpu, miner.get(), curPubkey.data(), lut0s.data(), score0s,
+                              nonces, NUM_STEPS, best.data())) break;
+            cohorts++;
+            for (uint32_t n = 0; n < C; ++n)
+            {
+                if (best[n] <= difficulty)
+                {
+                    shares++;
+                    printf("{\"type\":\"share\",\"epoch\":%llu,\"seed\":\"%s\",\"pubkey\":\"%s\","
+                           "\"nonce\":\"%s\",\"score\":%u,\"diff\":%u}\n",
+                           (unsigned long long)epoch,
+                           bytesToHex(curSeed.data(), 32).c_str(),
+                           bytesToHex(curPubkey.data(), 32).c_str(),
+                           bytesToHex(nonces[n].data(), 32).c_str(),
+                           best[n], difficulty);
+                    fflush(stdout);
+                }
+            }
+            if ((cohorts % 20) == 0)
+            {
+                fprintf(stderr, "[stratum] %llu cohorts (%llu nonces), %llu shares, last-best=%u diff=%u\n",
+                        (unsigned long long)cohorts, (unsigned long long)nonceCtr,
+                        (unsigned long long)shares, best[0], difficulty);
+                fflush(stderr);
+            }
+        }
+        fprintf(stderr, "[stratum] stopped: %llu cohorts, %llu shares\n",
+                (unsigned long long)cohorts, (unsigned long long)shares);
+        return 0;
+    }
+
+    fprintf(stderr, "unknown mode '%s' (use quick|verify|perf|mine|stratum)\n", mode.c_str());
     return 1;
 }

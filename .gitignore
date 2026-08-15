@@ -16,3 +16,6 @@ tools/
 # NEVER COMMIT: contains real pool access tokens / credentials
 deploy/
 mine.log
+
+# stray scratchpad fixtures
+scratchpad_*
