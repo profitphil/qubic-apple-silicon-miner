@@ -60,6 +60,32 @@ pkill -f stratum_miner                     # stop it
 
 Your worker and shares show up on the dashboard at <https://platform.qubic.li>.
 
+### Tuning: `COHORT`
+
+`COHORT` (default **4**) is how many nonce candidates the GPU scores per dispatch — the one
+knob worth touching. Bigger Apple GPUs have more cores to keep busy, so they benefit from a
+larger value; small GPUs are already saturated at 4.
+
+| GPU | Start with |
+|---|---|
+| M1 / base M-series (7–10 GPU cores) | **4** (default) |
+| Pro (16–19 cores) | **8–16** |
+| Max / Ultra (30+ cores) | **16–32** |
+
+Bigger cohort = higher peak it/s, but each dispatch is heavier, so on compute-heavy pubkeys a
+large cohort can trip the macOS GPU watchdog. The miner survives that (logs `skipping pubkey`
+and continues) — but if you see it *often*, step the cohort down. Find your sweet spot in
+dry-run, then launch live with it:
+
+```sh
+COHORT=8  ./run.sh      # watch the "[stratum] N it/s" line ~30s, Ctrl-C, compare
+COHORT=16 ./run.sh
+COHORT=8  ./run.sh --live   # launch with the winner
+```
+
+(Measured: 7-core M1 peaks ~40 it/s and wants COHORT 4; 16-core M2 Pro peaks ~87 it/s at
+COHORT 12–16. It scales roughly linearly with GPU cores.)
+
 ### Verify it yourself (no account needed)
 
 ```sh
