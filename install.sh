@@ -40,5 +40,5 @@ Next steps:
 Notes:
   - A base M-series (e.g. 7-8 GPU cores) will rarely if ever land a share on real BPP9000 —
     it is a proof-of-concept. More GPU cores (Pro/Max/Ultra) scale roughly linearly.
-  - See QUICKSTART.md for monitoring, stopping, and honest expectations.
+  - See README.md for monitoring, stopping, and honest expectations.
 EOF
