@@ -128,6 +128,30 @@ both an M1 (arm64) and a Ryzen 9950X (x86); all nonce scores matched (5320 / 528
 and the K12 test vectors pass on both. GPU↔CPU on-device is likewise bit-exact (0/8088 window
 diffs).
 
+## Projected throughput across Apple Silicon
+
+Two measured points — **M1 (7-core → ~40 it/s)** and **M2 Pro (16-core → ~90 it/s)** — give
+**~5.7 it/s per GPU core** (peak), scaling near-linearly. Estimate any Mac with
+**peak it/s ≈ GPU cores × 5.7**. Projected peak by tier (full GPU configs):
+
+| Tier | GPU cores | Chips | ~peak it/s | vs Ryzen 9950X (~330–400) | Verdict |
+|---|---|---|---|---|---|
+| Base  | 8–10  | M1, M2, M3, M4, M5 | ~45–57   | ~1/7        | Proof-of-concept |
+| Pro   | 14–20 | M1–M5 Pro          | ~80–115  | ~1/4        | Proof-of-concept |
+| Max   | 24–40 | M1–M5 Max          | ~135–230 | ~½          | Marginal — occasional shares |
+| Ultra | 48–80 | M1 / M2 / M3 Ultra | ~275–455 | ~parity–1.3× | Competitive |
+
+Notes:
+- These are **peak** it/s (fast-settling pubkeys); sustained average is lower, and landing a
+  share needs enough throughput to catch rare deep-diving nonces within each ~30 s job.
+- Projections use the M1/M2 per-core rate; **M3/M4/M5 GPUs are faster per core**, so newer
+  Max/Ultra chips likely beat these. (The M5 GPU's "neural accelerators" target ML matmul and
+  almost certainly don't help this integer LUT workload.)
+- **Bottom line: Max-tier is where it gets interesting; Ultra-tier reaches desktop-Ryzen
+  territory** at a fraction of the power. Base and Pro chips are proof-of-concept.
+
+Chip GPU-core counts per manufacturer specs / [AppleInsider](https://appleinsider.com/articles/25/10/28/chip-changes-how-fast-will-m5-pro-and-m5-max-be).
+
 ## Status
 
 - ✅ **Pool mining via the sanctioned path** — `wss://wps.qubic.li/stratum` (per the Qubic CTO).
