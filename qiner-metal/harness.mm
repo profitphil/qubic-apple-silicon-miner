@@ -441,7 +441,8 @@ static bool runCohortGPU(GpuScorer& gpu, const MinerT* m, const unsigned char pu
 
     std::vector<uint8_t> luts((size_t)C * LUT_BYTES);
     std::vector<uint32_t> r(C);
-    for (uint32_t s = 0; s < steps && !g_stop; ++s)
+    const uint64_t entryGen = g_gen;   // stratum: abandon this pubkey the instant a new job arrives
+    for (uint32_t s = 0; s < steps && !g_stop && g_gen == entryGen; ++s)
     {
         auto tStep = Clock::now();
         for (uint32_t n = 0; n < C; ++n)
@@ -731,7 +732,8 @@ int main(int argc, char** argv)
         bool haveJob = false, haveSeed = false;
         uint32_t difficulty = 0; uint64_t epoch = 0;
         std::vector<uint8_t> lut0s(LUT_BYTES); uint32_t score0s = 0;
-        uint64_t seenGen = 0, nonceCtr = 0, cohorts = 0, shares = 0;
+        uint64_t seenGen = 0, nonceCtr = 0, cohorts = 0, shares = 0, evalsWin = 0;
+        auto tRate = Clock::now();
 
         while (!g_stop)
         {
@@ -752,10 +754,12 @@ int main(int argc, char** argv)
                 curPubkey = j.pubkey; difficulty = j.difficulty; epoch = j.epoch;
                 buildInitialLut(miner.get(), curPubkey.data(), lut0s.data());
                 if (!gpu.score(lut0s.data(), 1, &score0s)) return 1;
-                nonceCtr = 0; haveJob = true;
-                fprintf(stderr, "[stratum] job epoch=%llu diff=%u pubkey=%s… score0=%u\n",
+                nonceCtr = 0;
+                haveJob = (score0s != INF);   // skip unminable timeout pubkeys (every eval max-cost, ~0 yield)
+                fprintf(stderr, "[stratum] job epoch=%llu diff=%u pubkey=%s… score0=%u%s\n",
                         (unsigned long long)epoch, difficulty,
-                        bytesToHex(curPubkey.data(), 6).c_str(), score0s);
+                        bytesToHex(curPubkey.data(), 6).c_str(), score0s,
+                        haveJob ? "" : " (SKIP: base network times out)");
                 fflush(stderr);
             }
             if (!haveJob) { usleep(100000); continue; }
@@ -781,12 +785,17 @@ int main(int argc, char** argv)
                     fflush(stdout);
                 }
             }
-            if ((cohorts % 20) == 0)
+            evalsWin += (uint64_t)NUM_STEPS * C;
+            double dt = secondsSince(tRate);
+            if (dt >= 15.0)
             {
-                fprintf(stderr, "[stratum] %llu cohorts (%llu nonces), %llu shares, last-best=%u diff=%u\n",
-                        (unsigned long long)cohorts, (unsigned long long)nonceCtr,
-                        (unsigned long long)shares, best[0], difficulty);
+                uint32_t bestWin = best[0];
+                for (uint32_t n = 1; n < C; ++n) if (best[n] < bestWin) bestWin = best[n];
+                fprintf(stderr, "[stratum] %.0f it/s | %llu nonces | %llu shares | best-this-window=%u (need <=%u)\n",
+                        (double)evalsWin / dt, (unsigned long long)nonceCtr,
+                        (unsigned long long)shares, bestWin, difficulty);
                 fflush(stderr);
+                tRate = Clock::now(); evalsWin = 0;
             }
         }
         fprintf(stderr, "[stratum] stopped: %llu cohorts, %llu shares\n",

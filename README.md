@@ -7,6 +7,22 @@ official scalar reference, plus a field-tested Ubuntu tuning guide for the offic
 Built and measured on an Apple M1 (8 GB, 7-core GPU), 2026-08-09, against the BPP9000
 algorithm live since Epoch 224.
 
+## Quick start (run it on your Mac)
+
+```sh
+git clone https://github.com/profitphil/qubic-apple-silicon-miner
+cd qubic-apple-silicon-miner
+./install.sh                       # build + fetch task + self-test (needs Xcode CLT + Node 20+)
+export QLI_TOKEN='<token from pool.qubic.li>'
+./run.sh                           # DRY-RUN: connect + mine live jobs, submit nothing
+./run.sh --live                    # submit shares to your account
+```
+
+Full guide, monitoring, and honest expectations: **[QUICKSTART.md](QUICKSTART.md)**.
+Connects to the official qubic.li pool via Stratum; shares credit your account. On a base
+M-series GPU this is a proof-of-concept (shares are unlikely — see QUICKSTART); larger Apple
+GPUs scale roughly linearly.
+
 ## What's here
 
 | Directory | Contents |

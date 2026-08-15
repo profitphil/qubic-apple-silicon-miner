@@ -21,8 +21,17 @@ const WORKER = process.env.WORKER || 'm1-metal';
 const LIVE = process.argv.includes('--live');
 
 function findToken(o){for(const k of Object.keys(o)){if(/accesstoken/i.test(k)&&typeof o[k]==='string')return o[k];if(o[k]&&typeof o[k]==='object'){const r=findToken(o[k]);if(r)return r;}}return null;}
-const token = findToken(JSON.parse(readFileSync(path.join(ROOT,'deploy','appsettings.production.json'),'utf8')));
-if(!token){console.error('no accessToken');process.exit(1);}
+function loadToken(){
+  if(process.env.QLI_TOKEN) return process.env.QLI_TOKEN.trim();
+  for(const p of ['qli-config.json','deploy/appsettings.production.json']){
+    try{ const t=findToken(JSON.parse(readFileSync(path.join(ROOT,p),'utf8'))); if(t) return t; }catch{}
+  }
+  console.error('No access token found. Get one at https://pool.qubic.li (control panel), then either:');
+  console.error("  export QLI_TOKEN='<your JWT>'   (recommended)");
+  console.error('  or create qli-config.json  {"accessToken":"<your JWT>"}');
+  process.exit(1);
+}
+const token = loadToken();
 const redact = s => (''+s).replace(token,'<TOKEN>');
 const now = () => new Date().toISOString().slice(11,19);
 const log = (...a) => console.log(now(), ...a);

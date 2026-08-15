@@ -19,3 +19,11 @@ mine.log
 
 # stray scratchpad fixtures
 scratchpad_*
+
+# live task (public core file, fetched at runtime)
+*.task
+stratum-live.log
+
+# per-user token config
+qli-config.json
+live.log
